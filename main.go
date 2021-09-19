@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"os"
@@ -9,14 +10,12 @@ import (
 	"os/signal"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/k0kubun/pp"
+	"github.com/urfave/cli"
 )
 
 type Watcher struct {
-	directories      []string
-	exclue           []string
-	operationToWatch fsnotify.Op // fsnotify.Write | fsnotify.Remove
-	done             chan bool
+	directories []string
+	done        chan bool
 
 	*fsnotify.Watcher
 }
@@ -43,9 +42,9 @@ func (w *Watcher) Watch(changed chan<- bool) {
 				if !ok {
 					return
 				}
-				log.Println("event:", event)
+
+				log.Println("change detected in:", event.Name)
 				if event.Op&fsnotify.Write == fsnotify.Write {
-					log.Println("modified file:", event.Name)
 					changed <- true
 				}
 			case err, ok := <-watcher.Errors:
@@ -80,7 +79,6 @@ type Runner struct {
 }
 
 func NewRunnerWithDefault(command string, args ...string) *Runner {
-
 	return &Runner{
 		command: command,
 		args:    args,
@@ -99,14 +97,12 @@ func (r *Runner) Run() {
 	cmd.Stdout = r.stdout
 
 	go func() {
+		log.Println("running: ", cmd.String())
 		err := cmd.Start()
 		if err != nil {
-			pp.Println(err)
-			// fmt.Println("run error:", err.Error(), cmd.String())
-			// fmt.Println(cmd.ProcessState.SysUsage().(*syscall.Rusage).Maxrss)
-			// if !errors.Is(err, context.Canceled) {
-			// 	pp.Println(err)
-			// }
+			if errors.Is(err, context.Canceled) {
+				log.Println("terminated current process due to change in file")
+			}
 		}
 	}()
 }
@@ -120,11 +116,11 @@ func (r *Runner) Exit() {
 	r.CancelFunc()
 }
 
-func start(done <-chan bool) {
-	r := NewRunnerWithDefault(os.Args[1], os.Args[2:]...)
+func start(done <-chan bool, dirs []string, cmds []string) {
+	r := NewRunnerWithDefault(cmds[0], cmds[1:]...)
 	r.Run()
 	fileChanged := make(chan bool)
-	w := NewWatcher(".")
+	w := NewWatcher(dirs...)
 	go w.Watch(fileChanged)
 
 	for {
@@ -140,27 +136,32 @@ func start(done <-chan bool) {
 }
 
 func main() {
-	// time.Sleep(5 * time.Second)
-	// app := &cli.App{
-	// 	Name:  "runr",
-	// 	Usage: "run any command when file changes",
-	// 	Flags: []cli.Flag{
-	// 		&cli.StringSliceFlag{
-	// 			Name:    "ignore",
-	// 			Aliases: []string{"i"},
-	// 		},
-	// 	},
-	// 	Action: func(c *cli.Context) error {
-	// 		fmt.Println(c.StringSlice("ignore"))
-	// 		fmt.Println(c.Args())
-	// 		return nil
-	// 	},
-	// }
-	// app.Run(os.Args)
-	done := make(chan bool)
-	go start(done)
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-	<-c // wait for user to press CTRL+C
-	done <- true
+	app := &cli.App{
+		Name:      "runr",
+		Usage:     "run any command when file changes",
+		UsageText: "runr -watch [dir] cmd cmd-args...",
+		Flags: []cli.Flag{
+			&cli.StringSliceFlag{
+				Name:  "watch",
+				Usage: "directory to watch",
+				Value: &cli.StringSlice{"."},
+			},
+		},
+		Action: func(ctx *cli.Context) error {
+			args := ctx.Args()
+			if len(args) == 0 {
+				log.Fatal("require commands to run")
+			}
+
+			done := make(chan bool)
+			go start(done, ctx.StringSlice("watch"), ctx.Args())
+			c := make(chan os.Signal, 1)
+			signal.Notify(c, os.Interrupt)
+			<-c // wait for user to press CTRL+C
+			done <- true
+
+			return nil
+		},
+	}
+	app.Run(os.Args)
 }

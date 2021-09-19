@@ -1,7 +1,11 @@
 # runr
 Run a command if any file changes
 
-# TODO
+## Why?
+
+To learn about file watchers and channels and goroutines in general.
+
+## TODO
 
 - [ ] Traverse directories recursively and add them to watch list
 - [ ] Ignore files and directories
